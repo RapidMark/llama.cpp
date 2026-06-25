@@ -733,6 +733,72 @@ void ggml_vec_dot_mxfp4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const vo
     *s = sumf;
 }
 
+#if defined __ARM_NEON
+// decode 4 e4m3 bytes to f32: normal -> (exp+120)<<23 | man<<20, subnormal -> man/512, NaN at 0x7F
+static inline float32x4_t e4m3_decode_4(uint32x4_t b) {
+    const uint32x4_t exp   = vandq_u32(vshrq_n_u32(b, 3), vdupq_n_u32(0xF));
+    const uint32x4_t man   = vandq_u32(b, vdupq_n_u32(0x7));
+    const uint32x4_t nbits = vorrq_u32(vshlq_n_u32(vaddq_u32(exp, vdupq_n_u32(120)), 23), vshlq_n_u32(man, 20));
+    float32x4_t val = vbslq_f32(vceqq_u32(exp, vdupq_n_u32(0)),
+                                vmulq_f32(vcvtq_f32_u32(man), vdupq_n_f32(1.0f / 512.0f)),
+                                vreinterpretq_f32_u32(nbits));
+    val = vbslq_f32(vceqq_u32(vandq_u32(b, vdupq_n_u32(0x7F)), vdupq_n_u32(0x7F)), vdupq_n_f32(NAN), val);
+    return vreinterpretq_f32_u32(vorrq_u32(vreinterpretq_u32_f32(val), vshlq_n_u32(vandq_u32(b, vdupq_n_u32(0x80)), 24)));
+}
+
+// accumulate the 16 e4m3 weights in wb against the 16 q8_0 activations in ab (four lanes at a time)
+static inline float32x4_t e4m3_acc_16(float32x4_t acc, uint8x16_t wb, int8x16_t ab) {
+    const uint16x8_t w16lo = vmovl_u8(vget_low_u8(wb));
+    const uint16x8_t w16hi = vmovl_u8(vget_high_u8(wb));
+    const int16x8_t  a16lo = vmovl_s8(vget_low_s8(ab));
+    const int16x8_t  a16hi = vmovl_s8(vget_high_s8(ab));
+    acc = vmlaq_f32(acc, e4m3_decode_4(vmovl_u16(vget_low_u16(w16lo))),  vcvtq_f32_s32(vmovl_s16(vget_low_s16(a16lo))));
+    acc = vmlaq_f32(acc, e4m3_decode_4(vmovl_u16(vget_high_u16(w16lo))), vcvtq_f32_s32(vmovl_s16(vget_high_s16(a16lo))));
+    acc = vmlaq_f32(acc, e4m3_decode_4(vmovl_u16(vget_low_u16(w16hi))),  vcvtq_f32_s32(vmovl_s16(vget_low_s16(a16hi))));
+    acc = vmlaq_f32(acc, e4m3_decode_4(vmovl_u16(vget_high_u16(w16hi))), vcvtq_f32_s32(vmovl_s16(vget_high_s16(a16hi))));
+    return acc;
+}
+#endif
+
+void ggml_vec_dot_e4m3_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+    assert(n % QK_E4M3 == 0);
+    static_assert(QK_E4M3 == QK8_0, "QK_E4M3 and QK8_0 must be the same");
+
+    const block_e4m3 * GGML_RESTRICT x = vx;
+    const block_q8_0 * GGML_RESTRICT y = vy;
+
+    const int nb = n / QK_E4M3;
+
+    int ib = 0;
+    float sumf = 0;
+
+#if defined __ARM_NEON
+    float32x4_t sumv = vdupq_n_f32(0.0f);
+    for (; ib < nb; ++ib) {
+        float32x4_t acc = vdupq_n_f32(0.0f);
+        acc = e4m3_acc_16(acc, vld1q_u8(x[ib].qs),      vld1q_s8(y[ib].qs));
+        acc = e4m3_acc_16(acc, vld1q_u8(x[ib].qs + 16), vld1q_s8(y[ib].qs + 16));
+        const float d = GGML_CPU_FP16_TO_FP32(x[ib].d) * GGML_CPU_FP16_TO_FP32(y[ib].d);
+        sumv = vmlaq_f32(sumv, acc, vdupq_n_f32(d));
+    }
+    sumf = vaddvq_f32(sumv);
+#endif
+    for (; ib < nb; ++ib) {
+        const float d = GGML_CPU_FP16_TO_FP32(x[ib].d) * GGML_CPU_FP16_TO_FP32(y[ib].d);
+        float si = 0;
+        for (int j = 0; j < QK_E4M3; ++j) {
+            si += GGML_CPU_E4M3_TO_FP32(x[ib].qs[j]) * y[ib].qs[j];
+        }
+        sumf += d * si;
+    }
+    *s = sumf;
+}
+
 void ggml_vec_dot_nvfp4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(nrc == 1);
     UNUSED(nrc);
