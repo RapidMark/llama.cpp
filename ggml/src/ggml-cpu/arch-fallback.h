@@ -103,9 +103,6 @@
 #define ggml_gemv_iq4_nl_4x4_q8_0_generic ggml_gemv_iq4_nl_4x4_q8_0
 #define ggml_gemv_mxfp4_4x4_q8_0_generic ggml_gemv_mxfp4_4x4_q8_0
 #define ggml_gemv_q8_0_4x4_q8_0_generic ggml_gemv_q8_0_4x4_q8_0
-// e4m3 repack has no AVX2 kernel yet -> use the generic gemv/gemm
-#define ggml_gemv_e4m3_8x8_q8_0_generic ggml_gemv_e4m3_8x8_q8_0
-#define ggml_gemm_e4m3_8x8_q8_0_generic ggml_gemm_e4m3_8x8_q8_0
 #define ggml_gemv_q8_0_4x8_q8_0_generic ggml_gemv_q8_0_4x8_q8_0
 #define ggml_gemm_q4_0_4x4_q8_0_generic ggml_gemm_q4_0_4x4_q8_0
 #define ggml_gemm_q4_0_4x8_q8_0_generic ggml_gemm_q4_0_4x8_q8_0

@@ -1296,7 +1296,7 @@ void ggml_gemv_e4m3_8x8_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, 
                 for (int j = 0; j < ncols_interleaved; j++) {
                     float sumi = 0.0f;
                     for (int i = 0; i < blocklen; ++i) {
-                        sumi += GGML_CPU_E4M3_TO_FP32(b_ptr[l].qs[k * ncols_interleaved * blocklen + j * blocklen + i]) *
+                        sumi += GGML_CPU_E4M3_TO_FP32(b_ptr[l].qs[(k * blocklen + i) * ncols_interleaved + j]) *
                                 a_ptr[l].qs[k * blocklen + i];
                     }
                     sumf[j] += sumi * GGML_CPU_FP16_TO_FP32(b_ptr[l].d[j]) * GGML_CPU_FP16_TO_FP32(a_ptr[l].d);
@@ -2338,7 +2338,7 @@ void ggml_gemm_e4m3_8x8_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, 
                         for (int j = 0; j < ncols_interleaved; j++) {
                             float sumi = 0.0f;
                             for (int i = 0; i < blocklen; ++i) {
-                                sumi += GGML_CPU_E4M3_TO_FP32(b_ptr[l].qs[k * ncols_interleaved * blocklen + j * blocklen + i]) *
+                                sumi += GGML_CPU_E4M3_TO_FP32(b_ptr[l].qs[(k * blocklen + i) * ncols_interleaved + j]) *
                                         a_ptr[l].qs[k * 4 * blocklen + m * blocklen + i];
                             }
                             sumf[m][j] += sumi * GGML_CPU_FP16_TO_FP32(b_ptr[l].d[j]) * GGML_CPU_FP16_TO_FP32(a_ptr[l].d[m]);
@@ -3943,15 +3943,13 @@ static block_e4m3x8 make_block_e4m3x8(block_e4m3 * in, unsigned int blck_size_in
         out.d[i] = in[i].d;
     }
 
-    const int end = QK_E4M3 * 8 / blck_size_interleave;
-
+    // position-major: 8 consecutive bytes are the 8 columns at one weight position,
+    // so the dot product can load 8 columns at once into the SIMD lanes
     GGML_ASSERT(blck_size_interleave == 8);
-    for (int i = 0; i < end; ++i) {
-        int src_id = i % 8;
-        int src_offset = (i / 8) * blck_size_interleave;
-        int dst_offset = i * blck_size_interleave;
-
-        memcpy(&out.qs[dst_offset], &in[src_id].qs[src_offset], sizeof(uint64_t));
+    for (int p = 0; p < QK_E4M3; p++) {
+        for (int j = 0; j < 8; j++) {
+            out.qs[p * 8 + j] = in[j].qs[p];
+        }
     }
 
     return out;
