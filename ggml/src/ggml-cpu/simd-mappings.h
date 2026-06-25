@@ -132,10 +132,6 @@ extern float ggml_table_f32_e8m0_half[1 << 8];
 extern float ggml_table_f32_e4m3[1 << 8];
 #define GGML_CPU_E4M3_TO_FP32(x) ggml_table_f32_e4m3[(uint8_t)(x)]
 
-// e4m3 decode: bit-compute wins where the hardware gather is slow (AMD), a table gather wins where it is fast (Intel).
-// Set once in ggml_cpu_init(); the AVX2 dot/gemm pick the gather path when true.
-extern bool ggml_e4m3_prefer_gather;
-
 // On ARM NEON, it's quicker to directly convert x -> x instead of calling into ggml_lookup_fp16_to_fp32,
 // so we define GGML_CPU_FP16_TO_FP32 and GGML_CPU_FP32_TO_FP16 elsewhere for NEON.
 // This is also true for POWER9.

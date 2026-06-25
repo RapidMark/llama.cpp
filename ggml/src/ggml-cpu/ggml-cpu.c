@@ -85,9 +85,6 @@ float ggml_table_f32_e8m0_half[1 << 8];
 // precomputed f32 table for e4m3 (1 KB) (simd-mappings.h)
 float ggml_table_f32_e4m3[1 << 8];
 
-// e4m3 decode strategy, set in ggml_cpu_init() (simd-mappings.h)
-bool ggml_e4m3_prefer_gather = false;
-
 #if defined(__ARM_ARCH)
 struct ggml_arm_arch_features_type {
     int sve_cnt;
@@ -3777,32 +3774,6 @@ int ggml_cpu_has_sme(void) {
 #endif
 }
 
-#if (defined(__x86_64__) || defined(__i386__)) && !defined(_MSC_VER)
-#include <cpuid.h>
-#endif
-
-// True on Intel, where the hardware gather is fast enough that a table lookup beats bit-computing the e4m3 decode.
-// On AMD the gather is microcoded and slow, so bit-compute wins; on non-x86 there is no gather path.
-static bool ggml_cpu_e4m3_gather_preferred(void) {
-    const char * env = getenv("GGML_E4M3_GATHER");
-    if (env) {
-        return atoi(env) != 0;
-    }
-#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-#if defined(_MSC_VER)
-    int regs[4];
-    __cpuid(regs, 0);
-    const uint32_t ebx = regs[1], ecx = regs[2], edx = regs[3];
-#else
-    uint32_t eax, ebx, ecx, edx;
-    __cpuid(0, eax, ebx, ecx, edx);
-#endif
-    return ebx == 0x756e6547 && edx == 0x49656e69 && ecx == 0x6c65746e; // "GenuineIntel"
-#else
-    return false;
-#endif
-}
-
 void ggml_cpu_init(void) {
     // needed to initialize ggml_time
     {
@@ -3840,7 +3811,6 @@ void ggml_cpu_init(void) {
             for (int i = 0; i < (1 << 8); ++i) {
                 ggml_table_f32_e4m3[i] = ggml_e4m3_to_fp32(i);
             }
-            ggml_e4m3_prefer_gather = ggml_cpu_e4m3_gather_preferred();
 
             const uint64_t t_end = ggml_time_us(); UNUSED(t_end);
 

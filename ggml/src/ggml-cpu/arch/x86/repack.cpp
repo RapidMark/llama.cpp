@@ -1710,33 +1710,6 @@ void ggml_gemv_mxfp4_8x8_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const v
     ggml_gemv_mxfp4_8x8_q8_0_generic(n, s, bs, vx, vy, nr, nc);
 }
 
-#if defined(__AVX2__)
-// decode 8 e4m3 bytes (the 8 columns at one weight position) to f32, no gather
-static inline __m256 e4m3_decode_8_x86(const uint8_t * GGML_RESTRICT p) {
-    const __m256i b     = _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)p));
-    const __m256i exp   = _mm256_and_si256(_mm256_srli_epi32(b, 3), _mm256_set1_epi32(0xF));
-    const __m256i man   = _mm256_and_si256(b, _mm256_set1_epi32(0x7));
-    const __m256i nbits = _mm256_or_si256(_mm256_slli_epi32(_mm256_add_epi32(exp, _mm256_set1_epi32(120)), 23),
-                                          _mm256_slli_epi32(man, 20));
-    __m256 val = _mm256_blendv_ps(_mm256_castsi256_ps(nbits),
-                                  _mm256_mul_ps(_mm256_cvtepi32_ps(man), _mm256_set1_ps(1.0f / 512.0f)),
-                                  _mm256_castsi256_ps(_mm256_cmpeq_epi32(exp, _mm256_setzero_si256())));
-    val = _mm256_blendv_ps(val, _mm256_set1_ps(NAN),
-                           _mm256_castsi256_ps(_mm256_cmpeq_epi32(_mm256_and_si256(b, _mm256_set1_epi32(0x7F)), _mm256_set1_epi32(0x7F))));
-    return _mm256_or_ps(val, _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_and_si256(b, _mm256_set1_epi32(0x80)), 24)));
-}
-
-// table gather variant; faster than bit-compute where the hardware gather is fast (Intel)
-static inline __m256 e4m3_decode_8_x86_gather(const uint8_t * GGML_RESTRICT p) {
-    const __m256i idx = _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)p));
-    return _mm256_i32gather_ps(ggml_table_f32_e4m3, idx, 4);
-}
-
-static inline __m256 e4m3_decode_8_x86_sel(const uint8_t * GGML_RESTRICT p) {
-    return ggml_e4m3_prefer_gather ? e4m3_decode_8_x86_gather(p) : e4m3_decode_8_x86(p);
-}
-#endif
-
 void ggml_gemv_e4m3_8x8_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
 #if defined(__AVX2__)
     const int qk = QK8_0;
@@ -1746,18 +1719,18 @@ void ggml_gemv_e4m3_8x8_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const vo
     assert(nr == 1);
     assert(n % qk == 0);
     assert(nc % ncols_interleaved == 0);
-    GGML_UNUSED(bs);
-    GGML_UNUSED(nr);
+    UNUSED(bs);
+    UNUSED(nr);
 
     const block_q8_0 * a_ptr = (const block_q8_0 *) vy;
     for (int x = 0; x < nc / ncols_interleaved; x++) {
         const block_e4m3x8 * b_ptr = (const block_e4m3x8 *) vx + (x * nb);
         __m256 acc = _mm256_setzero_ps();
         for (int l = 0; l < nb; l++) {
-            const __m256 dcol = _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)b_ptr[l].d));
+            const __m256 dcol = GGML_F32Cx8_LOAD(b_ptr[l].d);
             __m256 part = _mm256_setzero_ps();
             for (int p = 0; p < qk; p++) {
-                const __m256 w = e4m3_decode_8_x86_sel(b_ptr[l].qs + p * ncols_interleaved);
+                const __m256 w = ggml_e4m3_decode_8_avx2(b_ptr[l].qs + p * ncols_interleaved);
                 part = _mm256_fmadd_ps(_mm256_set1_ps((float) a_ptr[l].qs[p]), w, part);
             }
             acc = _mm256_fmadd_ps(_mm256_mul_ps(part, dcol), _mm256_set1_ps(GGML_CPU_FP16_TO_FP32(a_ptr[l].d)), acc);
@@ -3601,11 +3574,11 @@ void ggml_gemm_e4m3_8x8_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const vo
             __m256 acc[4];
             for (int m = 0; m < 4; m++) acc[m] = _mm256_setzero_ps();
             for (int l = 0; l < nb; l++) {
-                const __m256 dcol = _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)b_ptr[l].d));
+                const __m256 dcol = GGML_F32Cx8_LOAD(b_ptr[l].d);
                 __m256 part[4];
                 for (int m = 0; m < 4; m++) part[m] = _mm256_setzero_ps();
                 for (int p = 0; p < qk; p++) {
-                    const __m256 w = e4m3_decode_8_x86_sel(b_ptr[l].qs + p * ncols_interleaved);
+                    const __m256 w = ggml_e4m3_decode_8_avx2(b_ptr[l].qs + p * ncols_interleaved);
                     const int k = p / blocklen;
                     const int i = p % blocklen;
                     for (int m = 0; m < 4; m++) {

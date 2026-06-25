@@ -734,7 +734,7 @@ void ggml_vec_dot_mxfp4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const vo
 }
 
 #if defined __ARM_NEON
-// decode 4 e4m3 bytes to f32: normal -> (exp+120)<<23 | man<<20, subnormal -> man/512, NaN at 0x7F
+// e4m3 -> f32 (4 lanes)
 static inline float32x4_t e4m3_decode_4(uint32x4_t b) {
     const uint32x4_t exp   = vandq_u32(vshrq_n_u32(b, 3), vdupq_n_u32(0xF));
     const uint32x4_t man   = vandq_u32(b, vdupq_n_u32(0x7));
@@ -746,7 +746,6 @@ static inline float32x4_t e4m3_decode_4(uint32x4_t b) {
     return vreinterpretq_f32_u32(vorrq_u32(vreinterpretq_u32_f32(val), vshlq_n_u32(vandq_u32(b, vdupq_n_u32(0x80)), 24)));
 }
 
-// accumulate the 16 e4m3 weights in wb against the 16 q8_0 activations in ab (four lanes at a time)
 static inline float32x4_t e4m3_acc_16(float32x4_t acc, uint8x16_t wb, int8x16_t ab) {
     const uint16x8_t w16lo = vmovl_u8(vget_low_u8(wb));
     const uint16x8_t w16hi = vmovl_u8(vget_high_u8(wb));

@@ -345,6 +345,23 @@ static inline int32x4_t ggml_nvfp4_dot8(const int8x8_t q4_lo, const int8x8_t q8_
 #include <immintrin.h>
 #endif
 
+#if defined(__AVX2__)
+// e4m3 -> f32 for the x86 dot and repack kernels
+static inline __m256 ggml_e4m3_decode_8_avx2(const uint8_t * p) {
+    const __m256i b     = _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)p));
+    const __m256i exp   = _mm256_and_si256(_mm256_srli_epi32(b, 3), _mm256_set1_epi32(0xF));
+    const __m256i man   = _mm256_and_si256(b, _mm256_set1_epi32(0x7));
+    const __m256i nbits = _mm256_or_si256(_mm256_slli_epi32(_mm256_add_epi32(exp, _mm256_set1_epi32(120)), 23),
+                                          _mm256_slli_epi32(man, 20));
+    __m256 val = _mm256_blendv_ps(_mm256_castsi256_ps(nbits),
+                                  _mm256_mul_ps(_mm256_cvtepi32_ps(man), _mm256_set1_ps(1.0f / 512.0f)),
+                                  _mm256_castsi256_ps(_mm256_cmpeq_epi32(exp, _mm256_setzero_si256())));
+    val = _mm256_blendv_ps(val, _mm256_castsi256_ps(_mm256_set1_epi32(0x7FC00000)),
+                           _mm256_castsi256_ps(_mm256_cmpeq_epi32(_mm256_and_si256(b, _mm256_set1_epi32(0x7F)), _mm256_set1_epi32(0x7F))));
+    return _mm256_or_ps(val, _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_and_si256(b, _mm256_set1_epi32(0x80)), 24)));
+}
+#endif
+
 #ifdef __riscv_v_intrinsic
 #include <riscv_vector.h>
 #endif
