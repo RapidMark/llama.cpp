@@ -1016,6 +1016,16 @@ static inline __m256 e4m3_decode_8(const uint8_t * GGML_RESTRICT p) {
                            _mm256_castsi256_ps(_mm256_cmpeq_epi32(_mm256_and_si256(b, _mm256_set1_epi32(0x7F)), _mm256_set1_epi32(0x7F))));
     return _mm256_or_ps(val, _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_and_si256(b, _mm256_set1_epi32(0x80)), 24)));
 }
+
+// decode 8 e4m3 bytes via the precomputed table; faster than bit-compute where the hardware gather is fast (Intel)
+static inline __m256 e4m3_decode_8_gather(const uint8_t * GGML_RESTRICT p) {
+    const __m256i idx = _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)p));
+    return _mm256_i32gather_ps(ggml_table_f32_e4m3, idx, 4);
+}
+
+static inline __m256 e4m3_decode_8_sel(const uint8_t * GGML_RESTRICT p) {
+    return ggml_e4m3_prefer_gather ? e4m3_decode_8_gather(p) : e4m3_decode_8(p);
+}
 #endif
 
 void ggml_vec_dot_e4m3_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
@@ -1040,7 +1050,7 @@ void ggml_vec_dot_e4m3_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const voi
     for (; ib < nb; ++ib) {
         __m256 acc = _mm256_setzero_ps();
         for (int j = 0; j < QK_E4M3; j += 8) {
-            const __m256 w = e4m3_decode_8(x[ib].qs + j);
+            const __m256 w = e4m3_decode_8_sel(x[ib].qs + j);
             const __m256 a = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_loadl_epi64((const __m128i *)(y[ib].qs + j))));
             acc = _mm256_fmadd_ps(w, a, acc);
         }

@@ -1725,6 +1725,16 @@ static inline __m256 e4m3_decode_8_x86(const uint8_t * GGML_RESTRICT p) {
                            _mm256_castsi256_ps(_mm256_cmpeq_epi32(_mm256_and_si256(b, _mm256_set1_epi32(0x7F)), _mm256_set1_epi32(0x7F))));
     return _mm256_or_ps(val, _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_and_si256(b, _mm256_set1_epi32(0x80)), 24)));
 }
+
+// table gather variant; faster than bit-compute where the hardware gather is fast (Intel)
+static inline __m256 e4m3_decode_8_x86_gather(const uint8_t * GGML_RESTRICT p) {
+    const __m256i idx = _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)p));
+    return _mm256_i32gather_ps(ggml_table_f32_e4m3, idx, 4);
+}
+
+static inline __m256 e4m3_decode_8_x86_sel(const uint8_t * GGML_RESTRICT p) {
+    return ggml_e4m3_prefer_gather ? e4m3_decode_8_x86_gather(p) : e4m3_decode_8_x86(p);
+}
 #endif
 
 void ggml_gemv_e4m3_8x8_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
@@ -1747,7 +1757,7 @@ void ggml_gemv_e4m3_8x8_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const vo
             const __m256 dcol = _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)b_ptr[l].d));
             __m256 part = _mm256_setzero_ps();
             for (int p = 0; p < qk; p++) {
-                const __m256 w = e4m3_decode_8_x86(b_ptr[l].qs + p * ncols_interleaved);
+                const __m256 w = e4m3_decode_8_x86_sel(b_ptr[l].qs + p * ncols_interleaved);
                 part = _mm256_fmadd_ps(_mm256_set1_ps((float) a_ptr[l].qs[p]), w, part);
             }
             acc = _mm256_fmadd_ps(_mm256_mul_ps(part, dcol), _mm256_set1_ps(GGML_CPU_FP16_TO_FP32(a_ptr[l].d)), acc);
@@ -3595,7 +3605,7 @@ void ggml_gemm_e4m3_8x8_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const vo
                 __m256 part[4];
                 for (int m = 0; m < 4; m++) part[m] = _mm256_setzero_ps();
                 for (int p = 0; p < qk; p++) {
-                    const __m256 w = e4m3_decode_8_x86(b_ptr[l].qs + p * ncols_interleaved);
+                    const __m256 w = e4m3_decode_8_x86_sel(b_ptr[l].qs + p * ncols_interleaved);
                     const int k = p / blocklen;
                     const int i = p % blocklen;
                     for (int m = 0; m < 4; m++) {
