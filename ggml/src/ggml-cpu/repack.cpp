@@ -3943,8 +3943,7 @@ static block_e4m3x8 make_block_e4m3x8(block_e4m3 * in, unsigned int blck_size_in
         out.d[i] = in[i].d;
     }
 
-    // position-major: 8 consecutive bytes are the 8 columns at one weight position,
-    // so the dot product can load 8 columns at once into the SIMD lanes
+    // position-major: 8 consecutive bytes hold the 8 columns at one weight position
     GGML_ASSERT(blck_size_interleave == 8);
     for (int p = 0; p < QK_E4M3; p++) {
         for (int j = 0; j < 8; j++) {

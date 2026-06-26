@@ -128,7 +128,7 @@ extern float ggml_table_f32_e8m0_half[1 << 8];
 #endif
 
 // precomputed f32 table for e4m3 (1 KB)
-// defined in ggml-cpu.c, initialized in ggml_cpu_init(); the dot product decodes one fp8 byte per lane
+// defined in ggml-cpu.c, initialized in ggml_cpu_init()
 extern float ggml_table_f32_e4m3[1 << 8];
 #define GGML_CPU_E4M3_TO_FP32(x) ggml_table_f32_e4m3[(uint8_t)(x)]
 

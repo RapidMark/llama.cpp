@@ -346,7 +346,6 @@ static inline int32x4_t ggml_nvfp4_dot8(const int8x8_t q4_lo, const int8x8_t q8_
 #endif
 
 #if defined(__AVX2__)
-// e4m3 -> f32 for the x86 dot and repack kernels
 static inline __m256 ggml_e4m3_decode_8_avx2(const uint8_t * p) {
     const __m256i b     = _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)p));
     const __m256i exp   = _mm256_and_si256(_mm256_srli_epi32(b, 3), _mm256_set1_epi32(0xF));
