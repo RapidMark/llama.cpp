@@ -553,7 +553,7 @@ static inline uint8_t ggml_fp32_to_ue4m3(float x) {
 }
 
 // E4M3 (OCP e4m3fn): 1 sign, 4 exp bits (bias=7), 3 mantissa bits. Max finite 448; 0x7F/0xFF = NaN; no inf
-// Signed counterpart of ggml_ue4m3_to_fp32 above: that one is unsigned, applies the *0.5 kvalues_mxfp4 scale, and maps 0x7F to 0 instead of NaN.
+// (ue4m3 above is the unsigned variant, used for nvfp4 block scales)
 static inline float ggml_e4m3_to_fp32(uint8_t x) {
     if ((x & 0x7F) == 0x7F) {
         return NAN;
