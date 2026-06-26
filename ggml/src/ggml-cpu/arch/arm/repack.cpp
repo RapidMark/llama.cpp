@@ -5156,7 +5156,7 @@ void ggml_gemm_q8_0_4x8_q8_0(int                        n,
 }
 
 void ggml_gemv_e4m3_8x8_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
-#if defined(__ARM_NEON)
+#if ! ((defined(_MSC_VER)) && ! defined(__clang__)) && defined(__aarch64__) && defined(__ARM_NEON)
     const int qk = QK8_0;
     const int nb = n / qk;
     const int ncols_interleaved = 8;
@@ -5200,7 +5200,7 @@ void ggml_gemv_e4m3_8x8_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const vo
 }
 
 void ggml_gemm_e4m3_8x8_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
-#if defined(__ARM_NEON)
+#if ! ((defined(_MSC_VER)) && ! defined(__clang__)) && defined(__aarch64__) && defined(__ARM_NEON)
     const int qk = QK8_0;
     const int nb = n / qk;
     const int ncols_interleaved = 8;
