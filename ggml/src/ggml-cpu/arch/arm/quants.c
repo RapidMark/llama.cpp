@@ -734,27 +734,15 @@ void ggml_vec_dot_mxfp4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const vo
 }
 
 #if defined __ARM_NEON
-// e4m3 -> f32 (4 lanes)
-static inline float32x4_t e4m3_decode_4(uint32x4_t b) {
-    const uint32x4_t exp   = vandq_u32(vshrq_n_u32(b, 3), vdupq_n_u32(0xF));
-    const uint32x4_t man   = vandq_u32(b, vdupq_n_u32(0x7));
-    const uint32x4_t nbits = vorrq_u32(vshlq_n_u32(vaddq_u32(exp, vdupq_n_u32(120)), 23), vshlq_n_u32(man, 20));
-    float32x4_t val = vbslq_f32(vceqq_u32(exp, vdupq_n_u32(0)),
-                                vmulq_f32(vcvtq_f32_u32(man), vdupq_n_f32(1.0f / 512.0f)),
-                                vreinterpretq_f32_u32(nbits));
-    val = vbslq_f32(vceqq_u32(vandq_u32(b, vdupq_n_u32(0x7F)), vdupq_n_u32(0x7F)), vdupq_n_f32(NAN), val);
-    return vreinterpretq_f32_u32(vorrq_u32(vreinterpretq_u32_f32(val), vshlq_n_u32(vandq_u32(b, vdupq_n_u32(0x80)), 24)));
-}
-
 static inline float32x4_t e4m3_acc_16(float32x4_t acc, uint8x16_t wb, int8x16_t ab) {
     const uint16x8_t w16lo = vmovl_u8(vget_low_u8(wb));
     const uint16x8_t w16hi = vmovl_u8(vget_high_u8(wb));
     const int16x8_t  a16lo = vmovl_s8(vget_low_s8(ab));
     const int16x8_t  a16hi = vmovl_s8(vget_high_s8(ab));
-    acc = vmlaq_f32(acc, e4m3_decode_4(vmovl_u16(vget_low_u16(w16lo))),  vcvtq_f32_s32(vmovl_s16(vget_low_s16(a16lo))));
-    acc = vmlaq_f32(acc, e4m3_decode_4(vmovl_u16(vget_high_u16(w16lo))), vcvtq_f32_s32(vmovl_s16(vget_high_s16(a16lo))));
-    acc = vmlaq_f32(acc, e4m3_decode_4(vmovl_u16(vget_low_u16(w16hi))),  vcvtq_f32_s32(vmovl_s16(vget_low_s16(a16hi))));
-    acc = vmlaq_f32(acc, e4m3_decode_4(vmovl_u16(vget_high_u16(w16hi))), vcvtq_f32_s32(vmovl_s16(vget_high_s16(a16hi))));
+    acc = vmlaq_f32(acc, ggml_e4m3_decode_4_neon(vmovl_u16(vget_low_u16(w16lo))),  vcvtq_f32_s32(vmovl_s16(vget_low_s16(a16lo))));
+    acc = vmlaq_f32(acc, ggml_e4m3_decode_4_neon(vmovl_u16(vget_high_u16(w16lo))), vcvtq_f32_s32(vmovl_s16(vget_high_s16(a16lo))));
+    acc = vmlaq_f32(acc, ggml_e4m3_decode_4_neon(vmovl_u16(vget_low_u16(w16hi))),  vcvtq_f32_s32(vmovl_s16(vget_low_s16(a16hi))));
+    acc = vmlaq_f32(acc, ggml_e4m3_decode_4_neon(vmovl_u16(vget_high_u16(w16hi))), vcvtq_f32_s32(vmovl_s16(vget_high_s16(a16hi))));
     return acc;
 }
 #endif

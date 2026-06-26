@@ -4845,6 +4845,11 @@ static const ggml::cpu::tensor_traits * ggml_repack_get_optimal_repack_type(cons
                 return &e4m3_8x8_q8_0;
             }
         }
+        if (ggml_cpu_has_neon()) {
+            if (cur->ne[1] % 8 == 0) {
+                return &e4m3_8x8_q8_0;
+            }
+        }
     } else if (cur->type == GGML_TYPE_Q8_0) {
         if (ggml_cpu_has_neon() && ggml_cpu_has_matmul_int8()) {
             if (cur->ne[1] % 4 == 0) {

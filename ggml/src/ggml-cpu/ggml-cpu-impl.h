@@ -329,6 +329,18 @@ static inline int32x4_t ggml_nvfp4_dot8(const int8x8_t q4_lo, const int8x8_t q8_
     return vaddq_s32(sum_lo, sum_hi);
 }
 
+// e4m3 -> f32 (4 lanes)
+static inline float32x4_t ggml_e4m3_decode_4_neon(uint32x4_t b) {
+    const uint32x4_t exp   = vandq_u32(vshrq_n_u32(b, 3), vdupq_n_u32(0xF));
+    const uint32x4_t man   = vandq_u32(b, vdupq_n_u32(0x7));
+    const uint32x4_t nbits = vorrq_u32(vshlq_n_u32(vaddq_u32(exp, vdupq_n_u32(120)), 23), vshlq_n_u32(man, 20));
+    float32x4_t val = vbslq_f32(vceqq_u32(exp, vdupq_n_u32(0)),
+                                vmulq_f32(vcvtq_f32_u32(man), vdupq_n_f32(1.0f / 512.0f)),
+                                vreinterpretq_f32_u32(nbits));
+    val = vbslq_f32(vceqq_u32(vandq_u32(b, vdupq_n_u32(0x7F)), vdupq_n_u32(0x7F)), vdupq_n_f32(NAN), val);
+    return vreinterpretq_f32_u32(vorrq_u32(vreinterpretq_u32_f32(val), vshlq_n_u32(vandq_u32(b, vdupq_n_u32(0x80)), 24)));
+}
+
 #endif // defined(__ARM_NEON)
 
 #ifdef __wasm_simd128__
