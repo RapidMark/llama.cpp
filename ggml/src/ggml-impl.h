@@ -552,8 +552,7 @@ static inline uint8_t ggml_fp32_to_ue4m3(float x) {
     return (uint8_t) ((ue4m3_exp << 3) | ue4m3_man);
 }
 
-// E4M3 (OCP e4m3fn): 1 sign, 4 exp bits (bias=7), 3 mantissa bits. Max finite 448; 0x7F/0xFF = NaN; no inf
-// not merged with ue4m3 above (the unsigned nvfp4-scale codec): the formats differ enough that a shared helper would need flags
+// E4M3 (OCP e4m3fn); not merged with ue4m3 above (the unsigned nvfp4-scale codec): the formats differ enough that a shared helper would need flags
 static inline float ggml_e4m3_to_fp32(uint8_t x) {
     if ((x & 0x7F) == 0x7F) {
         return NAN;
