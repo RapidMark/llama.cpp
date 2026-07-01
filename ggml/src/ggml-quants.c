@@ -5345,6 +5345,15 @@ static bool validate_e_e8m0(uint8_t e, size_t i) {
     return true;
 }
 
+static bool validate_e4m3(uint8_t v, size_t i) {
+    if ((v & 0x7F) == 0x7F) { // 0x7F/0xFF decode to NaN
+        fprintf(stderr, "ggml_validate_row_data: found invalid e4m3 value %d at block %zu\n", v, i);
+        return false;
+    }
+
+    return true;
+}
+
 #define VALIDATE_ROW_DATA_D_F16_IMPL(type, data, nb) \
     const type * q = (const type *) (data); \
     for (size_t i = 0; i < (nb); ++i) { \
@@ -5538,7 +5547,17 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
             } break;
         case GGML_TYPE_E4M3:
             {
-                VALIDATE_ROW_DATA_D_F16_IMPL(block_e4m3, data, nb);
+                const block_e4m3 * q = (const block_e4m3 *) data;
+                for (size_t i = 0; i < nb; ++i) {
+                    if (!validate_fp16(q[i].d, i)) {
+                        return false;
+                    }
+                    for (size_t j = 0; j < QK_E4M3; ++j) {
+                        if (!validate_e4m3(q[i].qs[j], i)) {
+                            return false;
+                        }
+                    }
+                }
             } break;
         case GGML_TYPE_Q2_K:
             {
