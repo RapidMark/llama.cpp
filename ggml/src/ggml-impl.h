@@ -585,9 +585,7 @@ static inline uint8_t ggml_fp32_to_e4m3(float x) {
     int exp = fp32_exp + 7;
     if (exp <= 0) {
         int man = (int) (x * 512.0f + 0.5f); // subnormal: man * 2^-9
-        if (man > 7) {
-            man = 7;
-        }
+        // x < 2^-6 here, so man <= 8; man == 8 carries into the smallest normal (0x08 = 2^-6)
         return sign | (uint8_t) man;
     }
     int man = fp32_man + ((bits >> 19) & 1);

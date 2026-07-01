@@ -775,7 +775,8 @@ class E4M3(__Quant, qtype=GGMLQuantizationType.E4M3):
         fp32_man = ((bits >> 20) & 0x7).astype(np.int32)
         exp = fp32_exp + 7
 
-        sub = np.minimum((ax * np.float32(512.0) + np.float32(0.5)).astype(np.int32), 7)
+        # ax < 2^-6 where sub is selected, so sub <= 8; sub == 8 carries into the smallest normal (0x08 = 2^-6)
+        sub = (ax * np.float32(512.0) + np.float32(0.5)).astype(np.int32)
 
         man = fp32_man + ((bits >> 19) & 1).astype(np.int32)
         carry = man > 7
