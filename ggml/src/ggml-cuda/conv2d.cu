@@ -346,27 +346,27 @@ static int64_t conv2d_pool_available(ggml_backend_cuda_context & ctx) {
     return int64_t(free + ctx.pool().reusable());
 }
 
-// The staged path for inputs too big to stage at once: stage and compute `rows` output rows at a time.
+// The staged path for inputs too big to stage at once: stage and compute `strip_rows` output rows at a time.
 static void conv2d_staged_strips(ggml_backend_cuda_context & ctx,
                                  const float *               X_D,
                                  const half *                K_H,
                                  float *                     Y_D,
                                  const conv_params &         P,
-                                 int64_t                     rows,
+                                 int64_t                     strip_rows,
                                  bool                        use_mma,
-                                 bool                        use_blas,
-                                 cudaStream_t                st) {
-    const int64_t pw     = P.IW + 2 * P.PD_X;
-    const int64_t sh_max = (rows - 1) * P.ST_Y + (P.KH - 1) * P.DL_Y + 1;
+                                 bool                        use_blas) {
+    cudaStream_t               st     = ctx.stream();
+    const int64_t              pw     = P.IW + 2 * P.PD_X;
+    const int64_t              sh_max = (strip_rows - 1) * P.ST_Y + (P.KH - 1) * P.DL_Y + 1;
     ggml_cuda_pool_alloc<half> x_half(ctx.pool(), pw * sh_max * P.IC * P.B);
-    const dim3 block(ggml_cuda_info().devices[ctx.device].warp_size, 4);
+    const dim3                 block(ggml_cuda_info().devices[ctx.device].warp_size, 4);
 
-    for (int64_t r0 = 0; r0 < P.OH; r0 += rows) {
-        const int64_t rh   = std::min(rows, P.OH - r0);
+    for (int64_t r0 = 0; r0 < P.OH; r0 += strip_rows) {
+        const int64_t rh   = std::min(strip_rows, P.OH - r0);
         const int64_t sh   = (rh - 1) * P.ST_Y + (P.KH - 1) * P.DL_Y + 1;
         const int     n_in = int(pw * sh * P.IC * P.B);
         conv2d_pad_f16<<<(n_in + 255) / 256, 256, 0, st>>>(X_D, x_half.get(), int(P.IW), int(P.IH), int(pw), int(sh),
-                                                          int(P.PD_X), int(P.PD_Y - r0 * P.ST_Y), n_in);
+                                                           int(P.PD_X), int(P.PD_Y - r0 * P.ST_Y), n_in);
         float * out = Y_D + r0 * P.OW;
         if (use_blas) {
             const float    alpha = 1.0f, beta = 0.0f;
@@ -381,9 +381,9 @@ static void conv2d_staged_strips(ggml_backend_cuda_context & ctx,
             }
             continue;
         }
-        const conv_params sp = { pw,     sh,     P.OW, rh,   P.KW, P.KH, P.ST_X, P.ST_Y,
-                                 0,      0,      P.DL_X, P.DL_Y, P.IC, P.OC, P.B, P.B * P.OC * P.OW * rh };
-        const dim3 grid(unsigned((P.OW * rh + 63) / 64), unsigned((P.OC + 63) / 64), unsigned(P.B));
+        const conv_params sp = { pw, sh, P.OW,   rh,     P.KW, P.KH, P.ST_X, P.ST_Y,
+                                 0,  0,  P.DL_X, P.DL_Y, P.IC, P.OC, P.B,    P.B * P.OC * P.OW * rh };
+        const dim3        grid(unsigned((P.OW * rh + 63) / 64), unsigned((P.OC + 63) / 64), unsigned(P.B));
         if (use_mma) {
             conv2d_launch_implicit_gemm<true>(x_half.get(), K_H, out, sp, 1, grid, block, st, P.OW * P.OH);
         } else {
@@ -457,19 +457,19 @@ void ggml_cuda_op_conv2d(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
                              padded_w * padded_h <= limit && IC * B <= limit / (padded_w * padded_h);
     const bool kernel_ok = kernel->type == GGML_TYPE_F16 || kernel->type == GGML_TYPE_F32;
 
-    // The staged input comes from the pool, outside the graph allocation. When it does not fit, stage it in strips
-    // of output rows; when not even one strip fits, use the direct kernel.
-    const int64_t k_bytes   = kernel->type == GGML_TYPE_F32 ? ggml_nelements(kernel) * int64_t(sizeof(half)) : 0;
-    const int64_t row_bytes = padded_w * IC * B * int64_t(sizeof(half));
-    int64_t       rows      = OH;
+    // The staged input is not part of the graph allocation. If it does not fit, stage it in strips of output rows.
+    const int64_t k_bytes    = kernel->type == GGML_TYPE_F32 ? ggml_nelements(kernel) * int64_t(sizeof(half)) : 0;
+    const int64_t row_bytes  = padded_w * IC * B * int64_t(sizeof(half));
+    int64_t       strip_rows = OH;
     if (row_bytes > 0 && padded_h * row_bytes + k_bytes >= (int64_t(256) << 20)) {
+        // use half: the driver reports more free memory than one allocation can get
         const int64_t avail = conv2d_pool_available(ctx) / 2 - k_bytes;
         if (padded_h * row_bytes > avail) {
-            rows = std::min(OH, (avail / row_bytes - (KH - 1) * DL_Y - 1) / ST_Y + 1);
+            strip_rows = std::min(OH, (avail / row_bytes - (KH - 1) * DL_Y - 1) / ST_Y + 1);
         }
     }
 
-    if (kernel_ok && (use_mma || use_blas || use_simt) && (use_blas || !small_conv) && rows >= 1 &&
+    if (kernel_ok && (use_mma || use_blas || use_simt) && (use_blas || !small_conv) && strip_rows >= 1 &&
         ggml_nelements(input) <= limit && ggml_nelements(kernel) <= limit && total <= limit && padded_fits &&
         PD_X >= 0 && PD_Y >= 0 && ST_X > 0 && ST_Y > 0 && DL_X > 0 && DL_Y > 0 &&
         (OW - 1) * ST_X + (KW - 1) * DL_X < padded_w && (OH - 1) * ST_Y + (KH - 1) * DL_Y < padded_h &&
@@ -481,8 +481,8 @@ void ggml_cuda_op_conv2d(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
             K_H = k_half.alloc(ggml_nelements(kernel));
             ggml_get_to_fp16_cuda(GGML_TYPE_F32)(K_D, k_half.get(), ggml_nelements(kernel), st);
         }
-        if (rows < OH) {
-            conv2d_staged_strips(ctx, X_D, K_H, Y_D, params, rows, use_mma, use_blas, st);
+        if (strip_rows < OH) {
+            conv2d_staged_strips(ctx, X_D, K_H, Y_D, params, strip_rows, use_mma, use_blas);
             return;
         }
 
