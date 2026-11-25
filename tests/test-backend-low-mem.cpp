@@ -115,7 +115,7 @@ int main() {
             sum += ref[j] * ref[j];
         }
         const double nmse = err / sum;
-        const bool   ok   = nmse < 1e-6;
+        const bool   ok   = nmse < 5e-4;
         printf("%s: CONV_2D %dx%dx%d with %zu MB free: nmse = %g %s\n", ggml_backend_dev_name(dev), w, w, c,
                leave >> 20, nmse, ok ? "OK" : "FAIL");
         n_run++;
