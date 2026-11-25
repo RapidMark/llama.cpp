@@ -463,7 +463,7 @@ void ggml_cuda_op_conv2d(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const int64_t row_bytes = padded_w * IC * B * int64_t(sizeof(half));
     int64_t       rows      = OH;
     if (row_bytes > 0 && padded_h * row_bytes + k_bytes >= (int64_t(256) << 20)) {
-        const int64_t avail = conv2d_pool_available(ctx) / 16 * 15 - k_bytes;
+        const int64_t avail = conv2d_pool_available(ctx) / 2 - k_bytes;
         if (padded_h * row_bytes > avail) {
             rows = std::min(OH, (avail / row_bytes - (KH - 1) * DL_Y - 1) / ST_Y + 1);
         }
