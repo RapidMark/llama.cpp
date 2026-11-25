@@ -130,7 +130,8 @@ static __global__ void conv2d_implicit_gemm_f16(const half * __restrict__ input,
                                                 const conv_params P,
                                                 const int         split_k,
                                                 const uint3       kw_fd,
-                                                const uint3       kwkh_fd) {
+                                                const uint3       kwkh_fd,
+                                                const int64_t     out_plane) {
     using namespace ggml_cuda_mma;
     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
     constexpr int nthreads  = 4 * warp_size;
@@ -272,7 +273,7 @@ static __global__ void conv2d_implicit_gemm_f16(const half * __restrict__ input,
                     const int co  = m0 + wm + 16 * i + c[i][j].get_i(l);
                     const int pos = n0 + wn + 16 * j + c[i][j].get_j(l);
                     if (co < oc && pos < ow * oh) {
-                        output[(int64_t(blockIdx.z) * oc + co) * ow * oh + pos] = c[i][j].x[l];
+                        output[(int64_t(blockIdx.z) * oc + co) * out_plane + pos] = c[i][j].x[l];
                     }
                 }
             }
@@ -285,7 +286,7 @@ static __global__ void conv2d_implicit_gemm_f16(const half * __restrict__ input,
             for (int j = 0; j < RN; ++j) {
                 const int co = m0 + simt_m + i, pos = n0 + simt_n + j;
                 if (co < oc && pos < ow * oh) {
-                    output[(int64_t(blockIdx.z) * oc + co) * ow * oh + pos] = c_simt[i][j];
+                    output[(int64_t(blockIdx.z) * oc + co) * out_plane + pos] = c_simt[i][j];
                 }
             }
         }
@@ -318,18 +319,76 @@ static void conv2d_launch_implicit_gemm(const half *        input,
                                         int                 split_k,
                                         dim3                grid,
                                         dim3                block,
-                                        cudaStream_t        stream) {
+                                        cudaStream_t        stream,
+                                        int64_t             out_plane) {
     const uint3 kw_fd   = init_fastdiv_values(uint64_t(params.KW));
     const uint3 kwkh_fd = init_fastdiv_values(uint64_t(params.KW * params.KH));
     if (params.KW == 3 && params.KH == 3) {
         conv2d_implicit_gemm_f16<3, 3, use_mma>
-            <<<grid, block, 0, stream>>>(input, weight, output, params, split_k, kw_fd, kwkh_fd);
+            <<<grid, block, 0, stream>>>(input, weight, output, params, split_k, kw_fd, kwkh_fd, out_plane);
     } else if (params.KW == 1 && params.KH == 1) {
         conv2d_implicit_gemm_f16<1, 1, use_mma>
-            <<<grid, block, 0, stream>>>(input, weight, output, params, split_k, kw_fd, kwkh_fd);
+            <<<grid, block, 0, stream>>>(input, weight, output, params, split_k, kw_fd, kwkh_fd, out_plane);
     } else {
         conv2d_implicit_gemm_f16<0, 0, use_mma>
-            <<<grid, block, 0, stream>>>(input, weight, output, params, split_k, kw_fd, kwkh_fd);
+            <<<grid, block, 0, stream>>>(input, weight, output, params, split_k, kw_fd, kwkh_fd, out_plane);
+    }
+}
+
+// Bytes the pool can hand out now: free device memory plus what it already holds.
+static int64_t conv2d_pool_available(ggml_backend_cuda_context & ctx) {
+    size_t free, total;
+    ggml_cuda_set_device(ctx.device);
+    if (cudaMemGetInfo(&free, &total) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return INT64_MAX;
+    }
+    return int64_t(free + ctx.pool().reusable());
+}
+
+// The staged path for inputs too big to stage at once: stage and compute `rows` output rows at a time.
+static void conv2d_staged_strips(ggml_backend_cuda_context & ctx,
+                                 const float *               X_D,
+                                 const half *                K_H,
+                                 float *                     Y_D,
+                                 const conv_params &         P,
+                                 int64_t                     rows,
+                                 bool                        use_mma,
+                                 bool                        use_blas,
+                                 cudaStream_t                st) {
+    const int64_t pw     = P.IW + 2 * P.PD_X;
+    const int64_t sh_max = (rows - 1) * P.ST_Y + (P.KH - 1) * P.DL_Y + 1;
+    ggml_cuda_pool_alloc<half> x_half(ctx.pool(), pw * sh_max * P.IC * P.B);
+    const dim3 block(ggml_cuda_info().devices[ctx.device].warp_size, 4);
+
+    for (int64_t r0 = 0; r0 < P.OH; r0 += rows) {
+        const int64_t rh   = std::min(rows, P.OH - r0);
+        const int64_t sh   = (rh - 1) * P.ST_Y + (P.KH - 1) * P.DL_Y + 1;
+        const int     n_in = int(pw * sh * P.IC * P.B);
+        conv2d_pad_f16<<<(n_in + 255) / 256, 256, 0, st>>>(X_D, x_half.get(), int(P.IW), int(P.IH), int(pw), int(sh),
+                                                          int(P.PD_X), int(P.PD_Y - r0 * P.ST_Y), n_in);
+        float * out = Y_D + r0 * P.OW;
+        if (use_blas) {
+            const float    alpha = 1.0f, beta = 0.0f;
+            const int      positions = int(P.OW * rh);
+            cublasHandle_t cublas_h  = ctx.cublas_handle();
+            for (int n = 0; n < P.B; ++n) {
+                CUBLAS_CHECK(cublasGemmEx(cublas_h, CUBLAS_OP_N, CUBLAS_OP_N, positions, int(P.OC), int(P.IC), &alpha,
+                                          x_half.get() + int64_t(n) * P.IC * positions, CUDA_R_16F, positions, K_H,
+                                          CUDA_R_16F, int(P.IC), &beta, out + int64_t(n) * P.OC * P.OW * P.OH,
+                                          CUDA_R_32F, int(P.OW * P.OH), CUBLAS_COMPUTE_32F,
+                                          CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+            }
+            continue;
+        }
+        const conv_params sp = { pw,     sh,     P.OW, rh,   P.KW, P.KH, P.ST_X, P.ST_Y,
+                                 0,      0,      P.DL_X, P.DL_Y, P.IC, P.OC, P.B, P.B * P.OC * P.OW * rh };
+        const dim3 grid(unsigned((P.OW * rh + 63) / 64), unsigned((P.OC + 63) / 64), unsigned(P.B));
+        if (use_mma) {
+            conv2d_launch_implicit_gemm<true>(x_half.get(), K_H, out, sp, 1, grid, block, st, P.OW * P.OH);
+        } else {
+            conv2d_launch_implicit_gemm<false>(x_half.get(), K_H, out, sp, 1, grid, block, st, P.OW * P.OH);
+        }
     }
 }
 
@@ -397,11 +456,36 @@ void ggml_cuda_op_conv2d(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const bool    padded_fits = padded_w > 0 && padded_w <= limit && padded_h > 0 && padded_h <= limit &&
                              padded_w * padded_h <= limit && IC * B <= limit / (padded_w * padded_h);
     const bool kernel_ok = kernel->type == GGML_TYPE_F16 || kernel->type == GGML_TYPE_F32;
-    if (kernel_ok && (use_mma || use_blas || use_simt) && (use_blas || !small_conv) &&
+
+    // The staged input comes from the pool, outside the graph allocation. When it does not fit, stage it in strips
+    // of output rows; when not even one strip fits, use the direct kernel.
+    const int64_t k_bytes   = kernel->type == GGML_TYPE_F32 ? ggml_nelements(kernel) * int64_t(sizeof(half)) : 0;
+    const int64_t row_bytes = padded_w * IC * B * int64_t(sizeof(half));
+    int64_t       rows      = OH;
+    if (row_bytes > 0 && padded_h * row_bytes + k_bytes >= (int64_t(256) << 20)) {
+        const int64_t avail = conv2d_pool_available(ctx) / 16 * 15 - k_bytes;
+        if (padded_h * row_bytes > avail) {
+            rows = std::min(OH, (avail / row_bytes - (KH - 1) * DL_Y - 1) / ST_Y + 1);
+        }
+    }
+
+    if (kernel_ok && (use_mma || use_blas || use_simt) && (use_blas || !small_conv) && rows >= 1 &&
         ggml_nelements(input) <= limit && ggml_nelements(kernel) <= limit && total <= limit && padded_fits &&
         PD_X >= 0 && PD_Y >= 0 && ST_X > 0 && ST_Y > 0 && DL_X > 0 && DL_Y > 0 &&
         (OW - 1) * ST_X + (KW - 1) * DL_X < padded_w && (OH - 1) * ST_Y + (KH - 1) * DL_Y < padded_h &&
         (OC + 63) / 64 <= 65535 && B <= 65535) {
+        // F32 kernels take the same path: stage them once as F16, like the input, and still accumulate in F32.
+        ggml_cuda_pool_alloc<half> k_half(ctx.pool());
+        const half *               K_H = (const half *) K_D;
+        if (kernel->type == GGML_TYPE_F32) {
+            K_H = k_half.alloc(ggml_nelements(kernel));
+            ggml_get_to_fp16_cuda(GGML_TYPE_F32)(K_D, k_half.get(), ggml_nelements(kernel), st);
+        }
+        if (rows < OH) {
+            conv2d_staged_strips(ctx, X_D, K_H, Y_D, params, rows, use_mma, use_blas, st);
+            return;
+        }
+
         const int pw = int(padded_w), ph = int(padded_h);
         const int padded_total = int(padded_w * padded_h * IC * B);
 
@@ -412,13 +496,6 @@ void ggml_cuda_op_conv2d(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
         } else {
             conv2d_pad_f16<<<(padded_total + 255) / 256, 256, 0, st>>>(X_D, x_half.get(), int(IW), int(IH), pw, ph,
                                                                        PD_X, PD_Y, padded_total);
-        }
-        // F32 kernels take the same path: stage them once as F16, like the input, and still accumulate in F32.
-        ggml_cuda_pool_alloc<half> k_half(ctx.pool());
-        const half *               K_H = (const half *) K_D;
-        if (kernel->type == GGML_TYPE_F32) {
-            K_H = k_half.alloc(ggml_nelements(kernel));
-            ggml_get_to_fp16_cuda(GGML_TYPE_F32)(K_D, k_half.get(), ggml_nelements(kernel), st);
         }
         const conv_params padded_params = { pw, ph, OW, OH, KW, KH, ST_X, ST_Y, 0, 0, DL_X, DL_Y, IC, OC, B, total };
         if (use_blas) {
@@ -444,9 +521,9 @@ void ggml_cuda_op_conv2d(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
         const dim3                  block(device.warp_size, 4);
         const dim3 grid(unsigned((OW * OH + 63) / 64), unsigned((OC + 63) / 64), unsigned(B * split_k));
         if (use_mma) {
-            conv2d_launch_implicit_gemm<true>(x_half.get(), K_H, result, padded_params, split_k, grid, block, st);
+            conv2d_launch_implicit_gemm<true>(x_half.get(), K_H, result, padded_params, split_k, grid, block, st, OW * OH);
         } else {
-            conv2d_launch_implicit_gemm<false>(x_half.get(), K_H, result, padded_params, split_k, grid, block, st);
+            conv2d_launch_implicit_gemm<false>(x_half.get(), K_H, result, padded_params, split_k, grid, block, st, OW * OH);
         }
         if (split_k > 1) {
             conv2d_reduce_split_k<<<(total + 255) / 256, 256, 0, st>>>(result, Y_D, int(total), int(OC * OW * OH),

@@ -639,6 +639,14 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
         return ptr;
     }
 
+    size_t reusable() const override {
+        size_t cached = 0;
+        for (int i = 0; i < MAX_BUFFERS; ++i) {
+            cached += buffer_pool[i].size;
+        }
+        return cached;
+    }
+
     void free(void * ptr, size_t size) override {
         for (int i = 0; i < MAX_BUFFERS; ++i) {
             ggml_cuda_buffer& b = buffer_pool[i];
@@ -802,6 +810,10 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
 #endif
 
         return ptr;
+    }
+
+    size_t reusable() const override {
+        return pool_size - pool_used;
     }
 
     void free(void * ptr, size_t size) override {
