@@ -341,6 +341,20 @@ static void conv2d_cuda_f32(const float * X_D, const float * K_D, float * Y_D, c
     conv2d_cuda<float>(X_D, K_D, Y_D, P, st);
 }
 
+// The staged copies come from the pool, outside the graph allocation; skip staging when they cannot fit.
+static bool conv2d_staging_fits(ggml_backend_cuda_context & ctx, int64_t bytes) {
+    if (bytes < (int64_t(256) << 20)) {
+        return true;
+    }
+    size_t free, total;
+    ggml_cuda_set_device(ctx.device);
+    if (cudaMemGetInfo(&free, &total) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return true;
+    }
+    return bytes + bytes / 16 <= int64_t(free + ctx.pool().reusable());
+}
+
 void ggml_cuda_op_conv2d(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * kernel = dst->src[0];
     const ggml_tensor * input  = dst->src[1];
@@ -397,7 +411,10 @@ void ggml_cuda_op_conv2d(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const bool    padded_fits = padded_w > 0 && padded_w <= limit && padded_h > 0 && padded_h <= limit &&
                              padded_w * padded_h <= limit && IC * B <= limit / (padded_w * padded_h);
     const bool kernel_ok = kernel->type == GGML_TYPE_F16 || kernel->type == GGML_TYPE_F32;
+    const int64_t staging = padded_w * padded_h * IC * B * int64_t(sizeof(half)) +
+                            (kernel->type == GGML_TYPE_F32 ? ggml_nelements(kernel) * int64_t(sizeof(half)) : 0);
     if (kernel_ok && (use_mma || use_blas || use_simt) && (use_blas || !small_conv) &&
+        conv2d_staging_fits(ctx, staging) &&
         ggml_nelements(input) <= limit && ggml_nelements(kernel) <= limit && total <= limit && padded_fits &&
         PD_X >= 0 && PD_Y >= 0 && ST_X > 0 && ST_Y > 0 && DL_X > 0 && DL_Y > 0 &&
         (OW - 1) * ST_X + (KW - 1) * DL_X < padded_w && (OH - 1) * ST_Y + (KH - 1) * DL_Y < padded_h &&

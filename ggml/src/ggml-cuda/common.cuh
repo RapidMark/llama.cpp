@@ -1332,6 +1332,9 @@ struct ggml_cuda_pool {
 
     virtual void * alloc(size_t size, size_t * actual_size) = 0;
     virtual void free(void * ptr, size_t size) = 0;
+
+    // bytes held by the pool that a new allocation can reuse
+    virtual size_t reusable() const { return 0; }
 };
 
 template<typename T>
