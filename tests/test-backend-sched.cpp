@@ -933,6 +933,74 @@ static test_result test_user_input_overwrite_after_async(ggml_backend_t gpu, ggm
     return TEST_OK;
 }
 
+// An inplace op on the result of a CPU node, between GPU nodes, is left to the scheduler.
+// It writes into the memory of the CPU node, so it has to run where that memory is.
+static test_result test_inplace_view_auto_assign(ggml_backend_t gpu, ggml_backend_t cpu, int64_t tensor_len, bool use_device_host_buft) {
+
+    const int GPU = 0;
+    const int CPU = 1;
+
+    const std::vector<ggml_backend_t> backends = { gpu, cpu };
+
+    const size_t graph_size = 64;
+
+    backend_consts consts(backends, tensor_len);
+
+    ggml_backend_sched_ptr sched = create_test_scheduler(backends, graph_size, use_device_host_buft);
+
+    ggml_init_params params_compute = {
+        /*.mem_size   =*/ (graph_size + 8)*ggml_tensor_overhead() + ggml_graph_overhead_custom(graph_size, false),
+        /*.mem_buffer =*/ nullptr,
+        /*.no_alloc   =*/ true,
+    };
+    ggml_context_ptr ctx_compute(ggml_init(params_compute));
+
+    helper_graph g(ctx_compute.get(), graph_size);
+
+    ggml_tensor * a = g.add(ggml_add(ctx_compute.get(), consts.zero[GPU], consts.one[GPU]), GPU);
+    // stands in for an op the GPU cannot run
+    ggml_tensor * b = g.add(ggml_add(ctx_compute.get(), a, consts.one[CPU]), CPU);
+    // not assigned, so the scheduler decides
+    ggml_tensor * c = ggml_add_inplace(ctx_compute.get(), b, consts.one[CPU]);
+    ggml_build_forward_expand(g.gf, c);
+    ggml_tensor * out = g.add(ggml_add(ctx_compute.get(), c, consts.one[GPU]), GPU);
+    ggml_set_name(out, "out");
+    ggml_set_output(out);
+
+    for (size_t i = 0; i < g.nodes.size(); i++) {
+        if (!backend_supports_op(backends[g.backend_id[i]], g.nodes[i])) {
+            return skip("%s does not support %s", ggml_backend_name(backends[g.backend_id[i]]), ggml_op_name(g.nodes[i]->op));
+        }
+    }
+
+    ggml_backend_sched_reset(sched.get());
+    for (size_t i = 0; i < g.nodes.size(); i++) {
+        ggml_backend_sched_set_tensor_backend(sched.get(), g.nodes[i], backends[g.backend_id[i]]);
+    }
+    if (!ggml_backend_sched_alloc_graph(sched.get(), g.gf)) {
+        return fail("failed to allocate the graph");
+    }
+
+    ggml_backend_t backend_c = ggml_backend_sched_get_tensor_backend(sched.get(), c);
+    if (backend_c != cpu) {
+        return fail("the inplace op was assigned to %s, but its memory is on %s", ggml_backend_name(backend_c), ggml_backend_name(cpu));
+    }
+
+    if (ggml_backend_sched_graph_compute(sched.get(), g.gf) != GGML_STATUS_SUCCESS) {
+        return fail("failed to compute the graph");
+    }
+
+    std::vector<float> data(tensor_len);
+    ggml_backend_tensor_get(out, data.data(), 0, ggml_nbytes(out));
+    for (int64_t i = 0; i < tensor_len; i++) {
+        if (data[i] != 4.0f) {
+            return fail("%s[%" PRId64 "] = %f, expected 4.000000", ggml_get_name(out), i, data[i]);
+        }
+    }
+
+    return TEST_OK;
+}
+
 // Tests Y-shaped scheduling: two parallel lanes merging into 1. Lane A and B, merging into a single split.
 // The lanes join in a final split on backend_a that receives one activation from each of the two backend_b splits.
 static test_result test_y_shaped_graph(const std::vector<ggml_backend_t> & backends, int backend_a, int backend_b, int64_t tensor_len,
@@ -1102,6 +1170,11 @@ int main(int argc, char ** argv) {
                         case_end(test_user_input_overwrite_after_async(backend, cpu, tensor_len, sleep_us, parallel, use_device_host_buft));
                     }
                 }
+            }
+
+            for (int tensor_len : { 2, 4096 }) {
+                case_begin("test_inplace_view_auto_assign         %-8s tensor_len = %4d", name_backend, tensor_len);
+                case_end(test_inplace_view_auto_assign(backend, cpu, tensor_len, use_device_host_buft));
             }
 
             log_maybe("\n");

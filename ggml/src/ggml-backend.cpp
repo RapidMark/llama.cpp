@@ -1691,6 +1691,17 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
                 }
             }
         }
+
+        // an op that writes into a view (e.g. an inplace op) has to run where the view_src memory is accessible
+        if (node->view_src != NULL && *node_backend_id != -1) {
+            const int src_backend_id = tensor_backend_id(node->view_src);
+            if (src_backend_id != -1 && src_backend_id != *node_backend_id &&
+                !ggml_backend_sched_buffer_supported(sched, node->view_src, *node_backend_id) &&
+                ggml_backend_supports_op(sched->backends[src_backend_id], node)) {
+                *node_backend_id = src_backend_id;
+                SET_CAUSE(node, "3.vsrc");
+            }
+        }
     }
 
     // pass 4: assign backends to remaining src from dst and view_src
